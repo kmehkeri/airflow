@@ -23,6 +23,25 @@ from tests.helm_template_generator import render_chart
 
 
 class SchedulerTest(unittest.TestCase):
+    def test_should_add_extra_containers(self):
+        docs = render_chart(
+            values={
+                "executor": "CeleryExecutor",
+                "scheduler": {
+                    "extraContainers": [
+                        {
+                            "name": "test-container",
+                            "image": "test-registry/test-repo:test-tag",
+                            "imagePullPolicy": "Always",
+                        }
+                    ],
+                },
+            },
+            show_only=["templates/scheduler/scheduler-deployment.yaml"],
+        )
+
+        assert "test-container" == jmespath.search("spec.template.spec.containers[-1].name", docs[0])
+
     def test_should_add_extra_volume_and_extra_volume_mount(self):
         docs = render_chart(
             values={
@@ -35,7 +54,7 @@ class SchedulerTest(unittest.TestCase):
             show_only=["templates/scheduler/scheduler-deployment.yaml"],
         )
 
-        self.assertEqual("test-volume", jmespath.search("spec.template.spec.volumes[1].name", docs[0]))
-        self.assertEqual(
-            "test-volume", jmespath.search("spec.template.spec.containers[0].volumeMounts[3].name", docs[0])
+        assert "test-volume" == jmespath.search("spec.template.spec.volumes[1].name", docs[0])
+        assert "test-volume" == jmespath.search(
+            "spec.template.spec.containers[0].volumeMounts[3].name", docs[0]
         )

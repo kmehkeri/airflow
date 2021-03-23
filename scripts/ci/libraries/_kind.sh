@@ -118,7 +118,7 @@ function kind::perform_kind_cluster_operation() {
     set +u
     if [[ -z "${1=}" ]]; then
         echo
-        echo  "${COLOR_RED_ERROR} Operation must be provided as first parameter. One of: ${ALLOWED_KIND_OPERATIONS}  ${COLOR_RESET}"
+        echo  "${COLOR_RED}ERROR: Operation must be provided as first parameter. One of: ${ALLOWED_KIND_OPERATIONS}  ${COLOR_RESET}"
         echo
         exit 1
     fi
@@ -201,7 +201,7 @@ function kind::perform_kind_cluster_operation() {
                 -v "${KUBECONFIG}:/root/.kube/config" quay.io/derailed/k9s
         else
             echo
-            echo  "${COLOR_RED_ERROR} Wrong cluster operation: ${OPERATION}. Should be one of: ${ALLOWED_KIND_OPERATIONS}  ${COLOR_RESET}"
+            echo  "${COLOR_RED}ERROR: Wrong cluster operation: ${OPERATION}. Should be one of: ${ALLOWED_KIND_OPERATIONS}  ${COLOR_RESET}"
             echo
             exit 1
         fi
@@ -219,12 +219,12 @@ function kind::perform_kind_cluster_operation() {
             kind::create_cluster
         elif [[ ${OPERATION} == "stop" || ${OPERATION} == "deploy" || ${OPERATION} == "test" || ${OPERATION} == "shell" ]]; then
             echo
-            echo  "${COLOR_RED_ERROR} Cluster ${KIND_CLUSTER_NAME} does not exist. It should exist for ${OPERATION} operation  ${COLOR_RESET}"
+            echo  "${COLOR_RED}ERROR: Cluster ${KIND_CLUSTER_NAME} does not exist. It should exist for ${OPERATION} operation  ${COLOR_RESET}"
             echo
             exit 1
         else
             echo
-            echo  "${COLOR_RED_ERROR} Wrong cluster operation: ${OPERATION}. Should be one of ${ALLOWED_KIND_OPERATIONS}  ${COLOR_RESET}"
+            echo  "${COLOR_RED}ERROR: Wrong cluster operation: ${OPERATION}. Should be one of ${ALLOWED_KIND_OPERATIONS}  ${COLOR_RESET}"
             echo
             exit 1
         fi
@@ -255,13 +255,9 @@ function kind::build_image_for_kubernetes_tests() {
     docker build --tag "${AIRFLOW_PROD_IMAGE_KUBERNETES}" . -f - <<EOF
 FROM ${AIRFLOW_PROD_IMAGE}
 
-USER root
+COPY airflow/example_dags/ \${AIRFLOW_HOME}/dags/
 
-COPY --chown=airflow:root airflow/example_dags/ \${AIRFLOW_HOME}/dags/
-
-COPY --chown=airflow:root airflow/kubernetes_executor_templates/ \${AIRFLOW_HOME}/pod_templates/
-
-USER airflow
+COPY airflow/kubernetes_executor_templates/ \${AIRFLOW_HOME}/pod_templates/
 
 EOF
     echo "The ${AIRFLOW_PROD_IMAGE_KUBERNETES} is prepared for test kubernetes deployment."
@@ -297,7 +293,7 @@ function kind::wait_for_webserver_healthy() {
         num_tries=$((num_tries + 1))
         if [[ ${num_tries} == "${MAX_NUM_TRIES_FOR_HEALTH_CHECK}" ]]; then
             echo
-            echo  "${COLOR_RED_ERROR} Timeout while waiting for the webserver health check  ${COLOR_RESET}"
+            echo  "${COLOR_RED}ERROR: Timeout while waiting for the webserver health check  ${COLOR_RESET}"
             echo
         fi
     done
@@ -317,6 +313,24 @@ function kind::deploy_airflow_with_helm() {
     kubectl delete namespace "test-namespace" >/dev/null 2>&1 || true
     kubectl create namespace "${HELM_AIRFLOW_NAMESPACE}"
     kubectl create namespace "test-namespace"
+
+    # If on CI, "pass-through" the current docker credentials from the host to be default image pull-secrets in the namespace
+    if [[ ${CI:=} == "true" ]]; then
+      local regcred
+      regcred=$(jq -sRn '
+        .apiVersion="v1" |
+        .kind = "Secret" |
+        .type = "kubernetes.io/dockerconfigjson" |
+        .metadata.name="regcred" |
+        .data[".dockerconfigjson"] = @base64 "\(inputs)"
+      ' ~/.docker/config.json)
+      kubectl -n test-namespace apply -f - <<<"$regcred"
+      kubectl -n test-namespace patch serviceaccount default -p '{"imagePullSecrets": [{"name": "regcred"}]}'
+
+      kubectl -n "${HELM_AIRFLOW_NAMESPACE}" apply -f - <<<"$regcred"
+      kubectl -n "${HELM_AIRFLOW_NAMESPACE}" patch serviceaccount default -p '{"imagePullSecrets": [{"name": "regcred"}]}'
+    fi
+
     pushd "${AIRFLOW_SOURCES}/chart" >/dev/null 2>&1 || exit 1
     helm repo add stable https://charts.helm.sh/stable/
     helm dep update

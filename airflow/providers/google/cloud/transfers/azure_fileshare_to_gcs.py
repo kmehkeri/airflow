@@ -43,9 +43,6 @@ class AzureFileShareToGCSOperator(BaseOperator):
     :type wasb_conn_id: str
     :param gcp_conn_id: (Optional) The connection ID used to connect to Google Cloud.
     :type gcp_conn_id: str
-    :param dest_gcs_conn_id: (Deprecated) The connection ID used to connect to Google Cloud.
-        This parameter has been deprecated. You should pass the gcp_conn_id parameter instead.
-    :type dest_gcs_conn_id: str
     :param dest_gcs: The destination Google Cloud Storage bucket and prefix
         where you want to store the files. (templated)
     :type dest_gcs: str
@@ -125,7 +122,7 @@ class AzureFileShareToGCSOperator(BaseOperator):
         )
 
         gcs_hook = GCSHook(
-            google_cloud_storage_conn_id=self.gcp_conn_id,
+            gcp_conn_id=self.gcp_conn_id,
             delegate_to=self.delegate_to,
             impersonation_chain=self.google_impersonation_chain,
         )

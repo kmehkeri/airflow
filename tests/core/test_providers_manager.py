@@ -15,12 +15,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+import re
 import unittest
 
 from airflow.providers_manager import ProvidersManager
 
 ALL_PROVIDERS = [
+    'apache-airflow-providers-airbyte',
     'apache-airflow-providers-amazon',
+    'apache-airflow-providers-apache-beam',
     'apache-airflow-providers-apache-cassandra',
     'apache-airflow-providers-apache-druid',
     'apache-airflow-providers-apache-hdfs',
@@ -56,6 +59,7 @@ ALL_PROVIDERS = [
     'apache-airflow-providers-microsoft-winrm',
     'apache-airflow-providers-mongo',
     'apache-airflow-providers-mysql',
+    'apache-airflow-providers-neo4j',
     'apache-airflow-providers-odbc',
     'apache-airflow-providers-openfaas',
     'apache-airflow-providers-opsgenie',
@@ -74,10 +78,10 @@ ALL_PROVIDERS = [
     'apache-airflow-providers-sftp',
     'apache-airflow-providers-singularity',
     'apache-airflow-providers-slack',
-    # Uncomment when https://github.com/apache/airflow/issues/12881 is fixed
-    # 'apache-airflow-providers-snowflake',
+    'apache-airflow-providers-snowflake',
     'apache-airflow-providers-sqlite',
     'apache-airflow-providers-ssh',
+    'apache-airflow-providers-tableau',
     'apache-airflow-providers-telegram',
     'apache-airflow-providers-vertica',
     'apache-airflow-providers-yandex',
@@ -91,12 +95,14 @@ CONNECTIONS_LIST = [
     'azure_container_instances',
     'azure_cosmos',
     'azure_data_explorer',
+    'azure_data_factory',
     'azure_data_lake',
     'cassandra',
     'cloudant',
     'databricks',
     'dataprep',
     'docker',
+    'druid',
     'elasticsearch',
     'emr',
     'exasol',
@@ -121,6 +127,7 @@ CONNECTIONS_LIST = [
     'mongo',
     'mssql',
     'mysql',
+    'neo4j',
     'odbc',
     'oracle',
     'pig_cli',
@@ -132,8 +139,7 @@ CONNECTIONS_LIST = [
     'samba',
     'segment',
     'sftp',
-    #  Uncomment when https://github.com/apache/airflow/issues/12881 is fixed
-    # 'snowflake',
+    'snowflake',
     'spark',
     'spark_jdbc',
     'spark_sql',
@@ -162,6 +168,12 @@ CONNECTION_FORM_WIDGETS = [
     'extra__kubernetes__kube_config',
     'extra__kubernetes__kube_config_path',
     'extra__kubernetes__namespace',
+    'extra__snowflake__account',
+    'extra__snowflake__aws_access_key_id',
+    'extra__snowflake__aws_secret_access_key',
+    'extra__snowflake__database',
+    'extra__snowflake__region',
+    'extra__snowflake__warehouse',
     'extra__yandexcloud__folder_id',
     'extra__yandexcloud__oauth',
     'extra__yandexcloud__public_ssh_key',
@@ -178,6 +190,7 @@ CONNECTIONS_WITH_FIELD_BEHAVIOURS = [
     'kubernetes',
     'qubole',
     'sftp',
+    'snowflake',
     'spark',
     'ssh',
     'yandexcloud',
@@ -199,26 +212,26 @@ class TestProviderManager(unittest.TestCase):
         for provider in provider_list:
             package_name = provider_manager.providers[provider][1]['package-name']
             version = provider_manager.providers[provider][0]
-            self.assertRegex(version, r'[0-9]*\.[0-9]*\.[0-9]*.*')
-            self.assertEqual(package_name, provider)
-        self.assertEqual(ALL_PROVIDERS, provider_list)
+            assert re.search(r'[0-9]*\.[0-9]*\.[0-9]*.*', version)
+            assert package_name == provider
+        assert ALL_PROVIDERS == provider_list
 
     def test_hooks(self):
         provider_manager = ProvidersManager()
         connections_list = list(provider_manager.hooks.keys())
-        self.assertEqual(CONNECTIONS_LIST, connections_list)
+        assert CONNECTIONS_LIST == connections_list
 
     def test_connection_form_widgets(self):
         provider_manager = ProvidersManager()
         connections_form_widgets = list(provider_manager.connection_form_widgets.keys())
-        self.assertEqual(CONNECTION_FORM_WIDGETS, connections_form_widgets)
+        assert CONNECTION_FORM_WIDGETS == connections_form_widgets
 
     def test_field_behaviours(self):
         provider_manager = ProvidersManager()
         connections_with_field_behaviours = list(provider_manager.field_behaviours.keys())
-        self.assertEqual(CONNECTIONS_WITH_FIELD_BEHAVIOURS, connections_with_field_behaviours)
+        assert CONNECTIONS_WITH_FIELD_BEHAVIOURS == connections_with_field_behaviours
 
     def test_extra_links(self):
         provider_manager = ProvidersManager()
         extra_link_class_names = list(provider_manager.extra_links_class_names)
-        self.assertEqual(EXTRA_LINKS, extra_link_class_names)
+        assert EXTRA_LINKS == extra_link_class_names

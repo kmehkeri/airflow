@@ -19,6 +19,9 @@
 ## Airflow Create User Job
 #################################
 {{- if .Values.webserver.defaultUser.enabled }}
+{{- $nodeSelector := or .Values.webserver.nodeSelector .Values.nodeSelector }}
+{{- $affinity := or .Values.webserver.affinity .Values.affinity }}
+{{- $tolerations := or .Values.webserver.tolerations .Values.tolerations }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -48,11 +51,11 @@ spec:
           runAsUser: {{ .Values.uid }}
       restartPolicy: OnFailure
       nodeSelector:
-{{ toYaml .Values.nodeSelector | indent 8 }}
+{{ toYaml $nodeSelector | indent 8 }}
       affinity:
-{{ toYaml .Values.affinity | indent 8 }}
+{{ toYaml $affinity | indent 8 }}
       tolerations:
-{{ toYaml .Values.tolerations | indent 8 }}
+{{ toYaml $tolerations | indent 8 }}
       {{- if or .Values.registry.secretName .Values.registry.connection }}
       imagePullSecrets:
         - name: {{ template "registry_secret" . }}
@@ -64,7 +67,7 @@ spec:
           args:
             - "bash"
             - "-c"
-            # Support running against 1.10.x and 2.0.0dev/master
+            # Support running against 1.10.x and 2.x
             - 'airflow users create "$@" || airflow create_user "$@"'
             - --
             - "-r"
@@ -78,7 +81,7 @@ spec:
             - "-l"
             - {{ .Values.webserver.defaultUser.lastName }}
             - "-p"
-            - {{ .Values.webserver.defaultUser.password }}
+            - "{{ .Values.webserver.defaultUser.password }}"
           envFrom:
           {{- include "custom_airflow_environment_from" . | default "\n  []" | indent 10 }}
           env:

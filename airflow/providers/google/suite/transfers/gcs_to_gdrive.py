@@ -30,7 +30,7 @@ WILDCARD = "*"
 
 class GCSToGoogleDriveOperator(BaseOperator):
     """
-    Copies objects from a Google Cloud Storage service service to Google Drive service, with renaming
+    Copies objects from a Google Cloud Storage service to a Google Drive service, with renaming
     if requested.
 
     Using this operator requires the following OAuth 2.0 scope:
@@ -117,7 +117,7 @@ class GCSToGoogleDriveOperator(BaseOperator):
     def execute(self, context):
 
         self.gcs_hook = GCSHook(
-            google_cloud_storage_conn_id=self.gcp_conn_id,
+            gcp_conn_id=self.gcp_conn_id,
             delegate_to=self.delegate_to,
             impersonation_chain=self.impersonation_chain,
         )

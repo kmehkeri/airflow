@@ -19,6 +19,7 @@ import datetime as dt
 import getpass
 import unittest
 
+import pytest
 from marshmallow import ValidationError
 from parameterized import parameterized
 
@@ -88,7 +89,7 @@ class TestTaskInstanceSchema(unittest.TestCase):
             "try_number": 0,
             "unixname": getpass.getuser(),
         }
-        self.assertDictEqual(serialized_ti, expected_json)
+        assert serialized_ti == expected_json
 
     @provide_session
     def test_task_instance_schema_with_sla(self, session):
@@ -134,7 +135,7 @@ class TestTaskInstanceSchema(unittest.TestCase):
             "try_number": 0,
             "unixname": getpass.getuser(),
         }
-        self.assertDictEqual(serialized_ti, expected_json)
+        assert serialized_ti == expected_json
 
 
 class TestClearTaskInstanceFormSchema(unittest.TestCase):
@@ -163,7 +164,7 @@ class TestClearTaskInstanceFormSchema(unittest.TestCase):
         ]
     )
     def test_validation_error(self, payload):
-        with self.assertRaises(ValidationError):
+        with pytest.raises(ValidationError):
             clear_task_instance_form.load(payload)
 
 
@@ -193,12 +194,12 @@ class TestSetTaskInstanceStateFormSchema(unittest.TestCase):
             'new_state': 'failed',
             'task_id': 'print_the_context',
         }
-        self.assertEqual(expected_result, result)
+        assert expected_result == result
 
     @parameterized.expand(
         [
             ({"task_id": None},),
-            ({"include_future": "True"},),
+            ({"include_future": "foo"},),
             ({"execution_date": "NOW"},),
             ({"new_state": "INVALID_STATE"},),
         ]
@@ -206,5 +207,5 @@ class TestSetTaskInstanceStateFormSchema(unittest.TestCase):
     def test_validation_error(self, override_data):
         self.current_input.update(override_data)
 
-        with self.assertRaises(ValidationError):
-            clear_task_instance_form.load(self.current_input)
+        with pytest.raises(ValidationError):
+            set_task_instance_state_form.load(self.current_input)

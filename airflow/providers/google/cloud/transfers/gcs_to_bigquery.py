@@ -157,6 +157,10 @@ class GCSToBigQueryOperator(BaseOperator):
         Service Account Token Creator IAM role to the directly preceding identity, with first
         account from the list granting this role to the originating account (templated).
     :type impersonation_chain: Union[str, Sequence[str]]
+    :param labels: [Optional] Labels for the BiqQuery table.
+    :type labels: dict
+    :param description: [Optional] Description for the BigQuery table.
+    :type description: str
     """
 
     template_fields = (
@@ -204,6 +208,8 @@ class GCSToBigQueryOperator(BaseOperator):
         encryption_configuration=None,
         location=None,
         impersonation_chain: Optional[Union[str, Sequence[str]]] = None,
+        labels=None,
+        description=None,
         **kwargs,
     ):
 
@@ -249,6 +255,9 @@ class GCSToBigQueryOperator(BaseOperator):
         self.location = location
         self.impersonation_chain = impersonation_chain
 
+        self.labels = labels
+        self.description = description
+
     def execute(self, context):
         bq_hook = BigQueryHook(
             bigquery_conn_id=self.bigquery_conn_id,
@@ -260,7 +269,7 @@ class GCSToBigQueryOperator(BaseOperator):
         if not self.schema_fields:
             if self.schema_object and self.source_format != 'DATASTORE_BACKUP':
                 gcs_hook = GCSHook(
-                    google_cloud_storage_conn_id=self.google_cloud_storage_conn_id,
+                    gcp_conn_id=self.google_cloud_storage_conn_id,
                     delegate_to=self.delegate_to,
                     impersonation_chain=self.impersonation_chain,
                 )
@@ -300,6 +309,8 @@ class GCSToBigQueryOperator(BaseOperator):
                 encoding=self.encoding,
                 src_fmt_configs=self.src_fmt_configs,
                 encryption_configuration=self.encryption_configuration,
+                labels=self.labels,
+                description=self.description,
             )
         else:
             cursor.run_load(
@@ -323,6 +334,8 @@ class GCSToBigQueryOperator(BaseOperator):
                 time_partitioning=self.time_partitioning,
                 cluster_fields=self.cluster_fields,
                 encryption_configuration=self.encryption_configuration,
+                labels=self.labels,
+                description=self.description,
             )
 
         if cursor.use_legacy_sql:

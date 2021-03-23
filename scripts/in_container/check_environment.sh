@@ -24,7 +24,7 @@ DISABLED_INTEGRATIONS=""
 # We want to avoid misleading messages and perform only forward lookup of the service IP address.
 # Netcat when run without -n performs both forward and reverse lookup and fails if the reverse
 # lookup name does not match the original name even if the host is reachable via IP. This happens
-# randomly with docker-compose in Github Actions.
+# randomly with docker-compose in GitHub Actions.
 # Since we are not using reverse lookup elsewhere, we can perform forward lookup in python
 # And use the IP in NC and add '-n' switch to disable any DNS use.
 # Even if this message might be harmless, it might hide the real reason for the problem
@@ -52,14 +52,14 @@ function check_service {
         RES=$?
         set -e
         if [[ ${RES} == 0 ]]; then
-            echo  "${COLOR_GREEN_OK}  ${COLOR_RESET}"
+            echo  "${COLOR_GREEN}OK.  ${COLOR_RESET}"
             break
         else
             echo -n "."
             MAX_CHECK=$((MAX_CHECK-1))
         fi
         if [[ ${MAX_CHECK} == 0 ]]; then
-            echo "${COLOR_RED_ERROR} Maximum number of retries while checking service. Exiting ${COLOR_RESET}"
+            echo "${COLOR_RED}ERROR: Maximum number of retries while checking service. Exiting ${COLOR_RESET}"
             break
         else
             sleep 1

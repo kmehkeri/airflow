@@ -16,16 +16,26 @@
 # specific language governing permissions and limitations
 # under the License.
 """Setup.py for the Airflow project."""
-
+import glob
 import logging
 import os
 import subprocess
 import unittest
-from os.path import dirname
+from copy import deepcopy
+from distutils import log
+from os.path import dirname, relpath
 from textwrap import wrap
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Tuple
 
 from setuptools import Command, Distribution, find_namespace_packages, setup
+from setuptools.command.develop import develop as develop_orig
+from setuptools.command.install import install as install_orig
+
+# Controls whether providers are installed from packages or directly from sources
+# It is turned on by default in case of development environments such as Breeze
+# And it is particularly useful when you add a new provider and there is no
+# PyPI version to install the provider package from
+INSTALL_PROVIDERS_FROM_SOURCES = 'INSTALL_PROVIDERS_FROM_SOURCES'
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +44,7 @@ version = '2.1.0.dev0'
 my_dir = dirname(__file__)
 
 
-def airflow_test_suite():
+def airflow_test_suite() -> unittest.TestSuite:
     """Test suite for Airflow tests"""
     test_loader = unittest.TestLoader()
     test_suite = test_loader.discover(os.path.join(my_dir, 'tests'), pattern='test_*.py')
@@ -48,7 +58,7 @@ class CleanCommand(Command):
     """
 
     description = "Tidy up the project root"
-    user_options = []  # type: List[str]
+    user_options: List[str] = []
 
     def initialize_options(self):
         """Set default values for options."""
@@ -56,10 +66,25 @@ class CleanCommand(Command):
     def finalize_options(self):
         """Set final values for options."""
 
-    def run(self):  # noqa
-        """Run command to remove temporary files and directories."""
+    @staticmethod
+    def rm_all_files(files: List[str]):
+        """Remove all files from the list"""
+        for file in files:
+            try:
+                os.remove(file)
+            except Exception as e:  # noqa pylint: disable=broad-except
+                logger.warning("Error when removing %s: %s", file, e)
+
+    def run(self):
+        """Remove temporary files and directories."""
         os.chdir(my_dir)
-        os.system('rm -vrf ./build ./dist ./*.pyc ./*.tgz ./*.egg-info')
+        self.rm_all_files(glob.glob('./build/*'))
+        self.rm_all_files(glob.glob('./**/__pycache__/*', recursive=True))
+        self.rm_all_files(glob.glob('./**/*.pyc', recursive=True))
+        self.rm_all_files(glob.glob('./dist/*'))
+        self.rm_all_files(glob.glob('./*.egg-info'))
+        self.rm_all_files(glob.glob('./docker-context-files/*.whl'))
+        self.rm_all_files(glob.glob('./docker-context-files/*.tgz'))
 
 
 class CompileAssets(Command):
@@ -69,7 +94,7 @@ class CompileAssets(Command):
     """
 
     description = "Compile and build the frontend assets"
-    user_options = []  # type: List[str]
+    user_options: List[str] = []
 
     def initialize_options(self):
         """Set default values for options."""
@@ -89,7 +114,7 @@ class ListExtras(Command):
     """
 
     description = "List available extras"
-    user_options = []  # type: List[str]
+    user_options: List[str] = []
 
     def initialize_options(self):
         """Set default values for options."""
@@ -135,8 +160,7 @@ def git_version(version_: str) -> str:
             return f'.dev0+{sha}.dirty'
         # commit is clean
         return f'.release:{version_}+{sha}'
-    else:
-        return 'no_git_version'
+    return 'no_git_version'
 
 
 def write_version(filename: str = os.path.join(*[my_dir, "airflow", "git_version"])):
@@ -145,24 +169,32 @@ def write_version(filename: str = os.path.join(*[my_dir, "airflow", "git_version
 
     :param str filename: Destination file to write
     """
-    text = "{}".format(git_version(version))
+    text = f"{git_version(version)}"
     with open(filename, 'w') as file:
         file.write(text)
 
 
-if os.environ.get('USE_THEME_FROM_GIT'):
-    _SPHINX_AIRFLOW_THEME_URL = (
-        "@ https://github.com/apache/airflow-site/releases/download/0.0.4/"
-        "sphinx_airflow_theme-0.0.4-py3-none-any.whl"
-    )
-else:
-    _SPHINX_AIRFLOW_THEME_URL = ''
+def get_sphinx_theme_version() -> str:
+    """
+    Return sphinx theme version. If USE_THEME_FROM_GIT env variable is set, the theme is used from
+    GitHub to allow dynamically update it during development. However for regular PIP release
+    you cannot use @ package specification, so the latest available released theme package from
+    PIP is used.
+    :return: Version of sphinx theme to use.
+    """
+    if os.environ.get('USE_THEME_FROM_GIT'):
+        return (
+            "@ https://github.com/apache/airflow-site/releases/download/0.0.4/"
+            + "sphinx_airflow_theme-0.0.4-py3-none-any.whl"
+        )
+    return ''
+
 
 # 'Start dependencies group' and 'Start dependencies group' are mark for ./scripts/ci/check_order_setup.py
 # If you change this mark you should also change ./scripts/ci/check_order_setup.py
 # Start dependencies group
 amazon = [
-    'boto3>=1.15.0,<1.16.0',
+    'boto3>=1.15.0,<1.18.0',
     'botocore>=1.18.0,<1.19.0',
     'watchtower~=0.7.3',
 ]
@@ -185,9 +217,12 @@ azure = [
     'azure-keyvault>=4.1.0',
     'azure-kusto-data>=0.0.43,<0.1',
     'azure-mgmt-containerinstance>=1.5.0,<2.0',
+    'azure-mgmt-datafactory>=1.0.0,<2.0',
     'azure-mgmt-datalake-store>=0.5.0',
     'azure-mgmt-resource>=2.2.0',
-    'azure-storage>=0.34.0, <0.37.0',
+    'azure-storage-blob>=12.7.0',
+    'azure-storage-common>=2.1.0',
+    'azure-storage-file>=2.1.0',
 ]
 cassandra = [
     'cassandra-driver>=3.13.0,<3.21.0',
@@ -211,8 +246,9 @@ datadog = [
     'datadog>=0.14.0',
 ]
 doc = [
-    'sphinx>=2.1.2',
-    f'sphinx-airflow-theme{_SPHINX_AIRFLOW_THEME_URL}',
+    # Sphinx is limited to < 3.5.0 because of https://github.com/sphinx-doc/sphinx/issues/8880
+    'sphinx>=2.1.2, <3.5.0',
+    f'sphinx-airflow-theme{get_sphinx_theme_version()}',
     'sphinx-argparse>=0.1.13',
     'sphinx-autoapi==1.0.0',
     'sphinx-copybutton',
@@ -247,21 +283,22 @@ flask_oauth = [
 google = [
     'PyOpenSSL',
     'google-ads>=4.0.0,<8.0.0',
+    'google-api-core>=1.25.1,<2.0.0',
     'google-api-python-client>=1.6.0,<2.0.0',
     'google-auth>=1.0.0,<2.0.0',
     'google-auth-httplib2>=0.0.1',
-    'google-cloud-automl>=0.4.0,<2.0.0',
+    'google-cloud-automl>=2.1.0,<3.0.0',
     'google-cloud-bigquery-datatransfer>=3.0.0,<4.0.0',
     'google-cloud-bigtable>=1.0.0,<2.0.0',
     'google-cloud-container>=0.1.1,<2.0.0',
-    'google-cloud-datacatalog>=1.0.0,<2.0.0',
-    'google-cloud-dataproc>=1.0.1,<2.0.0',
+    'google-cloud-datacatalog>=3.0.0,<4.0.0',
+    'google-cloud-dataproc>=2.2.0,<3.0.0',
     'google-cloud-dlp>=0.11.0,<2.0.0',
     'google-cloud-kms>=2.0.0,<3.0.0',
     'google-cloud-language>=1.1.1,<2.0.0',
-    'google-cloud-logging>=1.14.0,<2.0.0',
+    'google-cloud-logging>=2.1.1,<3.0.0',
     'google-cloud-memcache>=0.2.0',
-    'google-cloud-monitoring>=0.34.0,<2.0.0',
+    'google-cloud-monitoring>=2.0.0,<3.0.0',
     'google-cloud-os-login>=2.0.0,<3.0.0',
     'google-cloud-pubsub>=2.0.0,<3.0.0',
     'google-cloud-redis>=2.0.0,<3.0.0',
@@ -269,14 +306,16 @@ google = [
     'google-cloud-spanner>=1.10.0,<2.0.0',
     'google-cloud-speech>=0.36.3,<2.0.0',
     'google-cloud-storage>=1.30,<2.0.0',
-    'google-cloud-tasks>=1.2.1,<2.0.0',
+    'google-cloud-tasks>=2.0.0,<3.0.0',
     'google-cloud-texttospeech>=0.4.0,<2.0.0',
     'google-cloud-translate>=1.5.0,<2.0.0',
     'google-cloud-videointelligence>=1.7.0,<2.0.0',
     'google-cloud-vision>=0.35.2,<2.0.0',
+    'google-cloud-workflows>=0.1.0,<2.0.0',
     'grpcio-gcp>=0.2.2',
     'json-merge-patch~=0.2',
     'pandas-gbq',
+    'plyvel',
 ]
 grpc = [
     'google-auth>=1.0.0, <2.0.0dev',
@@ -292,6 +331,7 @@ hdfs = [
 hive = [
     'hmsclient>=0.1.0',
     'pyhive[hive]>=0.6.0',
+    'thrift>=0.9.2',
 ]
 jdbc = [
     'jaydebeapi>=1.1.1',
@@ -324,9 +364,10 @@ mssql = [
     'pymssql~=2.1,>=2.1.5',
 ]
 mysql = [
-    'mysql-connector-python>=8.0.11, <=8.0.18',
+    'mysql-connector-python>=8.0.11, <=8.0.22',
     'mysqlclient>=1.3.6,<1.4',
 ]
+neo4j = ['neo4j>=4.2.1']
 odbc = [
     'pyodbc',
 ]
@@ -350,7 +391,7 @@ pinot = [
     'pinotdb>0.1.2,<1.0.0',
 ]
 plexus = [
-    'arrow>=0.16.0',
+    'arrow>=0.16.0,<1.0.0',
 ]
 postgres = [
     'psycopg2-binary>=2.7.4',
@@ -367,6 +408,7 @@ redis = [
 ]
 salesforce = [
     'simple-salesforce>=1.0.0',
+    'tableauserverclient',
 ]
 samba = [
     'pysmbclient>=0.1.3',
@@ -383,26 +425,10 @@ sentry = [
 ]
 singularity = ['spython>=0.0.56']
 slack = [
-    'slackclient>=2.0.0,<3.0.0',
+    'slack_sdk>=3.0.0,<4.0.0',
 ]
 snowflake = [
-    # The `azure` provider uses legacy `azure-storage` library, where `snowflake` uses the
-    # newer and more stable versions of those libraries. Most of `azure` operators and hooks work
-    # fine together with `snowflake` because the deprecated library does not overlap with the
-    # new libraries except the `blob` classes. So while `azure` works fine for most cases
-    # blob is the only exception
-    # Solution to that is being worked on in https://github.com/apache/airflow/pull/12188
-    # once it is merged, we can move those two back to `azure` extra.
-    'azure-storage-blob',
-    'azure-storage-common',
-    # snowflake is not compatible with latest version.
-    # This library monkey patches the requests library, so SSL is broken globally.
-    # See: https://github.com/snowflakedb/snowflake-connector-python/issues/324
-    'requests<2.24.0',
-    # Newest version drop support for old version of azure-storage-blob
-    # Until #12188 is solved at least we need to limit maximum version.
-    # https://github.com/apache/airflow/pull/12188
-    'snowflake-connector-python>=1.5.2,<=2.3.6',
+    'snowflake-connector-python>=2.4.1',
     'snowflake-sqlalchemy>=1.1.0',
 ]
 spark = [
@@ -417,7 +443,7 @@ statsd = [
     'statsd>=3.3.0, <4.0',
 ]
 tableau = [
-    'tableauserverclient~=0.12',
+    'tableauserverclient',
 ]
 telegram = [
     'python-telegram-bot==13.0',
@@ -442,11 +468,6 @@ zendesk = [
 ]
 # End dependencies group
 
-############################################################################################################
-# IMPORTANT NOTE!!!!!!!!!!!!!!!
-# IF you are removing dependencies from this list, please make sure that you also increase
-# DEPENDENCIES_EPOCH_NUMBER in the Dockerfile.ci
-############################################################################################################
 devel = [
     'beautifulsoup4~=4.7.1',
     'black',
@@ -469,51 +490,35 @@ devel = [
     # See: https://github.com/spulec/moto/issues/3535
     'mock<4.0.3',
     'mongomock',
-    'moto',
+    'moto<2',
     'mypy==0.770',
     'parameterized',
     'paramiko',
     'pipdeptree',
     'pre-commit',
-    'pylint==2.6.0',
+    'pylint>=2.7.0',
     'pysftp',
-    'pytest',
+    'pytest~=6.0',
     'pytest-cov',
     'pytest-instafail',
-    'pytest-rerunfailures',
+    'pytest-rerunfailures~=9.1',
     'pytest-timeouts',
     'pytest-xdist',
     'pywinrm',
     'qds-sdk>=1.9.6',
     'requests_mock',
-    'testfixtures',
     'wheel',
     'yamllint',
 ]
 
-############################################################################################################
-# IMPORTANT NOTE!!!!!!!!!!!!!!!
-# If you are removing dependencies from the above list, please make sure that you also increase
-# DEPENDENCIES_EPOCH_NUMBER in the Dockerfile.ci
-############################################################################################################
-
 devel_minreq = cgroups + devel + doc + kubernetes + mysql + password
 devel_hadoop = devel_minreq + hdfs + hive + kerberos + presto + webhdfs
 
-############################################################################################################
-# IMPORTANT NOTE!!!!!!!!!!!!!!!
-# If you have a 'pip check' problem with dependencies, it might be because some dependency has been
-# installed via 'install_requires' in setup.cfg in higher version than required in one of the options below.
-# For example pip check was failing with requests=2.25.1 installed even if in some dependencies below
-# < 2.24.0 was specified for it. Solution in such case is to add such limiting requirement to
-# install_requires in setup.cfg (we've added requests<2.24.0 there to limit requests library).
-# This should be done with appropriate comment explaining why the requirement was added.
-############################################################################################################
-
-
 # Dict of all providers which are part of the Apache Airflow repository together with their requirements
 PROVIDERS_REQUIREMENTS: Dict[str, List[str]] = {
+    'airbyte': [],
     'amazon': amazon,
+    'apache.beam': apache_beam,
     'apache.cassandra': cassandra,
     'apache.druid': druid,
     'apache.hdfs': hdfs,
@@ -549,6 +554,7 @@ PROVIDERS_REQUIREMENTS: Dict[str, List[str]] = {
     'microsoft.winrm': winrm,
     'mongo': mongo,
     'mysql': mysql,
+    'neo4j': neo4j,
     'odbc': odbc,
     'openfaas': [],
     'opsgenie': [],
@@ -570,20 +576,30 @@ PROVIDERS_REQUIREMENTS: Dict[str, List[str]] = {
     'snowflake': snowflake,
     'sqlite': [],
     'ssh': ssh,
+    'tableau': tableau,
     'telegram': telegram,
     'vertica': vertica,
     'yandex': yandex,
     'zendesk': zendesk,
 }
 
-
-# Those are all extras which do not have own 'providers'
-EXTRAS_REQUIREMENTS: Dict[str, List[str]] = {
+# Those are all additional extras which do not have their own 'providers'
+# The 'apache.atlas' and 'apache.webhdfs' are extras that provide additional libraries
+# but they do not have separate providers (yet?), they are merely there to add extra libraries
+# That can be used in custom python/bash operators.
+ADDITIONAL_EXTRAS_REQUIREMENTS: Dict[str, List[str]] = {
     'apache.atlas': atlas,
-    'apache.beam': apache_beam,
     'apache.webhdfs': webhdfs,
+}
+
+
+# Those are extras that are extensions of the 'core' Airflow. They provide additional features
+# To airflow core. They do not have separate providers because they do not have any operators/hooks etc.
+CORE_EXTRAS_REQUIREMENTS: Dict[str, List[str]] = {
     'async': async_packages,
+    'celery': celery,  # also has provider, but it extends the core with the Celery executor
     'cgroups': cgroups,
+    'cncf.kubernetes': kubernetes,  # also has provider, but it extends the core with the KubernetesExecutor
     'dask': dask,
     'github_enterprise': flask_oauth,
     'google_auth': flask_oauth,
@@ -593,13 +609,31 @@ EXTRAS_REQUIREMENTS: Dict[str, List[str]] = {
     'rabbitmq': rabbitmq,
     'sentry': sentry,
     'statsd': statsd,
-    'tableau': tableau,
     'virtualenv': virtualenv,
 }
 
-# Add extras for all providers. For all providers the extras name = providers name
-for provider_name, provider_requirement in PROVIDERS_REQUIREMENTS.items():
-    EXTRAS_REQUIREMENTS[provider_name] = provider_requirement
+
+EXTRAS_REQUIREMENTS: Dict[str, List[str]] = deepcopy(CORE_EXTRAS_REQUIREMENTS)
+
+
+def add_extras_for_all_providers() -> None:
+    """
+    Adds extras for all providers.
+    By default all providers have the same extra name as provider id, for example
+    'apache.hive' extra has 'apache.hive' provider requirement.
+    """
+    for provider_name, provider_requirement in PROVIDERS_REQUIREMENTS.items():
+        EXTRAS_REQUIREMENTS[provider_name] = provider_requirement
+
+
+def add_additional_extras() -> None:
+    """Adds extras for all additional extras."""
+    for extra_name, extra_requirement in ADDITIONAL_EXTRAS_REQUIREMENTS.items():
+        EXTRAS_REQUIREMENTS[extra_name] = extra_requirement
+
+
+add_extras_for_all_providers()
+add_additional_extras()
 
 #############################################################################################################
 #  The whole section can be removed in Airflow 3.0 as those old aliases are deprecated in 2.* series
@@ -640,15 +674,21 @@ def find_requirements_for_alias(alias_to_look_for: Tuple[str, str]) -> List[str]
         raise Exception(f"The extra {new_extra} is missing for alias {deprecated_extra}")
 
 
-# Add extras for all deprecated aliases. Requirements for those deprecated aliases are the same
-# as the extras they are replaced with
-for alias, extra in EXTRAS_DEPRECATED_ALIASES.items():
-    requirements = EXTRAS_REQUIREMENTS.get(extra) if extra != '' else []
-    if requirements is None:
-        raise Exception(f"The extra {extra} is missing for deprecated alias {alias}")
-    # Note the requirements are not copies - those are the same lists as for the new extras. This is intended.
-    # Thanks to that if the original extras are later extended with providers, aliases are extended as well.
-    EXTRAS_REQUIREMENTS[alias] = requirements
+def add_extras_for_all_deprecated_aliases() -> None:
+    """
+    Add extras for all deprecated aliases. Requirements for those deprecated aliases are the same
+    as the extras they are replaced with.
+    The requirements are not copies - those are the same lists as for the new extras. This is intended.
+    Thanks to that if the original extras are later extended with providers, aliases are extended as well.
+    """
+    for alias, extra in EXTRAS_DEPRECATED_ALIASES.items():
+        requirements = EXTRAS_REQUIREMENTS.get(extra) if extra != '' else []
+        if requirements is None:
+            raise Exception(f"The extra {extra} is missing for deprecated alias {alias}")
+        EXTRAS_REQUIREMENTS[alias] = requirements
+
+
+add_extras_for_all_deprecated_aliases()
 
 #############################################################################################################
 #  End of deprecated section
@@ -669,6 +709,7 @@ ALL_DB_PROVIDERS = [
     'microsoft.mssql',
     'mongo',
     'mysql',
+    'neo4j',
     'postgres',
     'presto',
     'vertica',
@@ -699,12 +740,12 @@ PACKAGES_EXCLUDED_FOR_ALL.extend(
     ]
 )
 
-# Those packages are excluded because they break tests (downgrading mock) and they are
-# not needed to run our test suite. This can be removed as soon as we get non-conflicting
-# requirements for the apache-beam as well. This waits for azure + snowflake fixes:
+# Those packages are excluded because they break tests and they are not needed to run our test suite.
+# This can be removed as soon as we get non-conflicting
+# requirements for the apache-beam as well.
 #
-# * Azure: https://github.com/apache/airflow/issues/11968
-# * Snowflake: https://github.com/apache/airflow/issues/12881
+# Currently Apache Beam has very narrow and old dependencies for 'dill' and 'mock' packages which
+# are required by our tests (but only for tests).
 #
 PACKAGES_EXCLUDED_FOR_CI = [
     'apache-beam',
@@ -745,21 +786,24 @@ EXTRAS_REQUIREMENTS["devel_hadoop"] = devel_hadoop  # devel_hadoop already inclu
 EXTRAS_REQUIREMENTS["devel_all"] = devel_all
 EXTRAS_REQUIREMENTS["devel_ci"] = devel_ci
 
-# For Python 3.6+ the dictionary order remains when keys() are retrieved.
-# Sort both: extras and list of dependencies to make it easier to analyse problems
-# external packages will be first, then if providers are added they are added at the end of the lists.
-EXTRAS_REQUIREMENTS = dict(sorted(EXTRAS_REQUIREMENTS.items()))  # noqa
-for extra_list in EXTRAS_REQUIREMENTS.values():
-    extra_list.sort()
 
-# A set that keeps all extras that install some providers.
-# It is used by pre-commit that verifies if documentation in docs/apache-airflow/extra-packages-ref.rst
-# are synchronized.
-EXTRAS_WITH_PROVIDERS: Set[str] = set()
+def sort_extras_requirements() -> Dict[str, List[str]]:
+    """
+    For Python 3.6+ the dictionary order remains when keys() are retrieved.
+    Sort both: extras and list of dependencies to make it easier to analyse problems
+    external packages will be first, then if providers are added they are added at the end of the lists.
+    """
+    sorted_requirements = dict(sorted(EXTRAS_REQUIREMENTS.items()))  # noqa
+    for extra_list in sorted_requirements.values():
+        extra_list.sort()
+    return sorted_requirements
+
+
+EXTRAS_REQUIREMENTS = sort_extras_requirements()
 
 # Those providers are pre-installed always when airflow is installed.
 # Those providers do not have dependency on airflow2.0 because that would lead to circular dependencies.
-# This is not a problem for PIP but some tools (pipdeptree) show that as a warning.
+# This is not a problem for PIP but some tools (pipdeptree) show those as a warning.
 PREINSTALLED_PROVIDERS = [
     'ftp',
     'http',
@@ -779,70 +823,169 @@ def get_provider_package_from_package_id(package_id: str):
     return f"apache-airflow-providers-{package_suffix}"
 
 
-class AirflowDistribution(Distribution):
-    """setuptools.Distribution subclass with Airflow specific behaviour"""
+def get_all_provider_packages():
+    """Returns all provider packages configured in setup.py"""
+    return " ".join([get_provider_package_from_package_id(package) for package in PROVIDERS_REQUIREMENTS])
 
-    # https://github.com/PyCQA/pylint/issues/3737
+
+class AirflowDistribution(Distribution):
+    """
+    The setuptools.Distribution subclass with Airflow specific behaviour
+
+    The reason for pylint: disable=signature-differs of parse_config_files is explained here:
+    https://github.com/PyCQA/pylint/issues/3737
+
+    """
+
     def parse_config_files(self, *args, **kwargs):  # pylint: disable=signature-differs
         """
         Ensure that when we have been asked to install providers from sources
-        that we don't *also* try to install those providers from PyPI
+        that we don't *also* try to install those providers from PyPI.
+        Also we should make sure that in this case we copy provider.yaml files so that
+        Providers manager can find package information.
         """
         super().parse_config_files(*args, **kwargs)
-        if os.getenv('INSTALL_PROVIDERS_FROM_SOURCES') == 'true':
+        if os.getenv(INSTALL_PROVIDERS_FROM_SOURCES) == 'true':
             self.install_requires = [  # noqa  pylint: disable=attribute-defined-outside-init
                 req for req in self.install_requires if not req.startswith('apache-airflow-providers-')
             ]
+            provider_yaml_files = glob.glob("airflow/providers/**/provider.yaml", recursive=True)
+            for provider_yaml_file in provider_yaml_files:
+                provider_relative_path = relpath(provider_yaml_file, os.path.join(my_dir, "airflow"))
+                self.package_data['airflow'].append(provider_relative_path)
         else:
             self.install_requires.extend(
                 [get_provider_package_from_package_id(package_id) for package_id in PREINSTALLED_PROVIDERS]
             )
 
 
-def add_provider_packages_to_requirements(extra_with_providers: str, providers: List[str]):
+def replace_extra_requirement_with_provider_packages(extra: str, providers: List[str]) -> None:
     """
-    Adds provider packages to requirements
+    Replaces extra requirement with provider package. The intention here is that when
+    the provider is added as dependency of extra, there is no need to add the dependencies
+    separately. This is not needed and even harmful, because in case of future versions of
+    the provider, the requirements might change, so hard-coding requirements from the version
+    that was available at the release time might cause dependency conflicts in the future.
 
-    :param extra_with_providers: Name of the extra to add providers to
-    :param providers: list of provider names
+    Say for example that you have salesforce provider with those deps:
+
+    { 'salesforce': ['simple-salesforce>=1.0.0', 'tableauserverclient'] }
+
+    Initially ['salesforce'] extra has those requirements and it works like that when you install
+    it when INSTALL_PROVIDERS_FROM_SOURCES is set to `true` (during the development). However, when
+    the production installation is used, The dependencies are changed:
+
+    { 'salesforce': ['apache-airflow-providers-salesforce'] }
+
+    And then, 'apache-airflow-providers-salesforce' package has those 'install_requires' dependencies:
+            ['simple-salesforce>=1.0.0', 'tableauserverclient']
+
+    So transitively 'salesforce' extra has all the requirements it needs and in case the provider
+    changes it's dependencies, they will transitively change as well.
+
+    In the constraint mechanism we save both - provider versions and it's dependencies
+    version, which means that installation using constraints is repeatable.
+
+    :param extra: Name of the extra to add providers to
+    :param providers: list of provider ids
     """
-    EXTRAS_WITH_PROVIDERS.add(extra_with_providers)
-    EXTRAS_REQUIREMENTS[extra_with_providers].extend(
+    EXTRAS_REQUIREMENTS[extra] = [
+        get_provider_package_from_package_id(package_name) for package_name in providers
+    ]
+
+
+def add_provider_packages_to_extra_requirements(extra: str, providers: List[str]) -> None:
+    """
+    Adds provider packages as requirements to extra. This is used to add provider packages as requirements
+    to the "bulk" kind of extras. Those bulk extras do not have the detailed 'extra' requirements as
+    initial values, so instead of replacing them (see previous function) we can extend them.
+
+    :param extra: Name of the extra to add providers to
+    :param providers: list of provider ids
+    """
+    EXTRAS_REQUIREMENTS[extra].extend(
         [get_provider_package_from_package_id(package_name) for package_name in providers]
     )
 
 
-def add_all_provider_packages():
+def add_all_provider_packages() -> None:
     """
-    In case of regular installation (when INSTALL_PROVIDERS_FROM_SOURCES is false), we should
-    add extra dependencies to Airflow - to get the providers automatically installed when
-    those extras are installed.
+    In case of regular installation (providers installed from packages), we should add extra dependencies to
+    Airflow - to get the providers automatically installed when those extras are installed.
+
+    For providers installed from sources we skip that step. That helps to test and install airflow with
+    all packages in CI - for example when new providers are added, otherwise the installation would fail
+    as the new provider is not yet in PyPI.
 
     """
     for provider in ALL_PROVIDERS:
-        add_provider_packages_to_requirements(provider, [provider])
-    add_provider_packages_to_requirements("all", ALL_PROVIDERS)
-    add_provider_packages_to_requirements("devel_ci", ALL_PROVIDERS)
-    add_provider_packages_to_requirements("devel_all", ALL_PROVIDERS)
-    add_provider_packages_to_requirements("all_dbs", ALL_DB_PROVIDERS)
-    add_provider_packages_to_requirements("devel_hadoop", ["apache.hdfs", "apache.hive", "presto"])
+        replace_extra_requirement_with_provider_packages(provider, [provider])
+    add_provider_packages_to_extra_requirements("all", ALL_PROVIDERS)
+    add_provider_packages_to_extra_requirements("devel_ci", ALL_PROVIDERS)
+    add_provider_packages_to_extra_requirements("devel_all", ALL_PROVIDERS)
+    add_provider_packages_to_extra_requirements("all_dbs", ALL_DB_PROVIDERS)
+    add_provider_packages_to_extra_requirements("devel_hadoop", ["apache.hdfs", "apache.hive", "presto"])
 
 
-def do_setup():
-    """Perform the Airflow package setup."""
+class Develop(develop_orig):
+    """Forces removal of providers in editable mode."""
+
+    def run(self):
+        self.announce('Installing in editable mode. Uninstalling provider packages!', level=log.INFO)
+        # We need to run "python3 -m pip" because it might be that older PIP binary is in the path
+        # And it results with an error when running pip directly (cannot import pip module)
+        # also PIP does not have a stable API so we have to run subprocesses ¯\_(ツ)_/¯
+        try:
+            installed_packages = (
+                subprocess.check_output(["python3", "-m", "pip", "freeze"]).decode().splitlines()
+            )
+            airflow_provider_packages = [
+                package_line.split("=")[0]
+                for package_line in installed_packages
+                if package_line.startswith("apache-airflow-providers")
+            ]
+            self.announce(f'Uninstalling ${airflow_provider_packages}!', level=log.INFO)
+            subprocess.check_call(["python3", "-m", "pip", "uninstall", "--yes", *airflow_provider_packages])
+        except subprocess.CalledProcessError as e:
+            self.announce(f'Error when uninstalling airflow provider packages: {e}!', level=log.WARN)
+        super().run()
+
+
+class Install(install_orig):
+    """Forces installation of providers from sources in editable mode."""
+
+    def run(self):
+        self.announce('Standard installation. Providers are installed from packages', level=log.INFO)
+        super().run()
+
+
+def do_setup() -> None:
+    """
+    Perform the Airflow package setup.
+
+    Most values come from setup.cfg, only the dynamically calculated ones are passed to setup
+    function call. See https://setuptools.readthedocs.io/en/latest/userguide/declarative_config.html
+    """
     setup_kwargs = {}
 
-    if os.getenv('INSTALL_PROVIDERS_FROM_SOURCES') == 'true':
-        # Only specify this if we need this option, otherwise let default from
-        # setup.cfg control this (kwargs in setup() call take priority)
-        setup_kwargs['packages'] = find_namespace_packages(include=['airflow*'])
+    def include_provider_namespace_packages_when_installing_from_sources() -> None:
+        """
+        When installing providers from sources we install all namespace packages found below airflow,
+        including airflow and provider packages, otherwise defaults from setup.cfg control this.
+        The kwargs in setup() call override those that are specified in setup.cfg.
+        """
+        if os.getenv(INSTALL_PROVIDERS_FROM_SOURCES) == 'true':
+            setup_kwargs['packages'] = find_namespace_packages(include=['airflow*'])
+
+    include_provider_namespace_packages_when_installing_from_sources()
+    if os.getenv(INSTALL_PROVIDERS_FROM_SOURCES) == 'true':
+        print("Installing providers from sources. Skip adding providers as dependencies")
     else:
         add_all_provider_packages()
+
     write_version()
     setup(
         distclass=AirflowDistribution,
-        # Most values come from setup.cfg -- see
-        # https://setuptools.readthedocs.io/en/latest/userguide/declarative_config.html
         version=version,
         extras_require=EXTRAS_REQUIREMENTS,
         download_url=('https://archive.apache.org/dist/airflow/' + version),
@@ -850,6 +993,8 @@ def do_setup():
             'extra_clean': CleanCommand,
             'compile_assets': CompileAssets,
             'list_extras': ListExtras,
+            'install': Install,
+            'develop': Develop,
         },
         test_suite='setup.airflow_test_suite',
         **setup_kwargs,

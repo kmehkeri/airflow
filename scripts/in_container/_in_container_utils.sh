@@ -16,6 +16,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
+OPTIONAL_VERBOSE_FLAG=()
+PROVIDER_PACKAGES_DIR="${AIRFLOW_SOURCES}/dev/provider_packages"
+
 #######################################################################################################
 #
 # Adds trap to the traps already set.
@@ -40,7 +43,7 @@ function assert_in_container() {
     export VERBOSE=${VERBOSE:="false"}
     if [[ ! -f /.dockerenv ]]; then
         echo
-        echo "${COLOR_RED_ERROR} You are not inside the Airflow docker container!  ${COLOR_RESET}"
+        echo "${COLOR_RED}ERROR: You are not inside the Airflow docker container!  ${COLOR_RESET}"
         echo
         echo "You should only run this script in the Airflow docker container as it may override your files."
         echo "Learn more about how we develop and test airflow in:"
@@ -104,6 +107,7 @@ function in_container_cleanup_pyc() {
     sudo find . \
         -path "./airflow/www/node_modules" -prune -o \
         -path "./airflow/www_rbac/node_modules" -prune -o \
+        -path "./airflow/ui/node_modules" -prune -o \
         -path "./.eggs" -prune -o \
         -path "./docs/_build" -prune -o \
         -path "./build" -prune -o \
@@ -119,6 +123,7 @@ function in_container_cleanup_pycache() {
     find . \
         -path "./airflow/www/node_modules" -prune -o \
         -path "./airflow/www_rbac/node_modules" -prune -o \
+        -path "./airflow/ui/node_modules" -prune -o \
         -path "./.eggs" -prune -o \
         -path "./docs/_build" -prune -o \
         -path "./build" -prune -o \
@@ -142,26 +147,14 @@ function in_container_fix_ownership() {
             "/root/.docker"
             "${AIRFLOW_SOURCES}"
         )
-        if [[ ${VERBOSE} == "true" ]]; then
-            echo "Fixing ownership of mounted files"
-        fi
         sudo find "${DIRECTORIES_TO_FIX[@]}" -print0 -user root 2>/dev/null |
             sudo xargs --null chown "${HOST_USER_ID}.${HOST_GROUP_ID}" --no-dereference ||
             true >/dev/null 2>&1
-        if [[ ${VERBOSE} == "true" ]]; then
-            echo "Fixed ownership of mounted files"
-        fi
     fi
 }
 
 function in_container_clear_tmp() {
-    if [[ ${VERBOSE} == "true" ]]; then
-        echo "Cleaning ${AIRFLOW_SOURCES}/tmp from the container"
-    fi
     rm -rf /tmp/*
-    if [[ ${VERBOSE} == "true" ]]; then
-        echo "Cleaned ${AIRFLOW_SOURCES}/tmp from the container"
-    fi
 }
 
 function in_container_go_to_airflow_sources() {
@@ -192,6 +185,7 @@ function in_container_refresh_pylint_todo() {
     find . \
         -path "./airflow/www/node_modules" -prune -o \
         -path "./airflow/www_rbac/node_modules" -prune -o \
+        -path "./airflow/ui/node_modules" -prune -o \
         -path "./airflow/migrations/versions" -prune -o \
         -path "./.eggs" -prune -o \
         -path "./docs/_build" -prune -o \
@@ -282,7 +276,7 @@ function install_airflow_from_wheel() {
         >&2 echo
         exit 4
     fi
-    pip install "${airflow_package}${1}" >"${OUTPUT_PRINTED_ONLY_ON_ERROR}" 2>&1
+    pip install "${airflow_package}${extras}"
 }
 
 function install_airflow_from_sdist() {
@@ -299,28 +293,25 @@ function install_airflow_from_sdist() {
         >&2 echo
         exit 4
     fi
-    pip install "${airflow_package}${1}" >"${OUTPUT_PRINTED_ONLY_ON_ERROR}" 2>&1
+    pip install "${airflow_package}${extras}"
 }
 
 function install_remaining_dependencies() {
-    pip install apache-beam[gcp] >"${OUTPUT_PRINTED_ONLY_ON_ERROR}" 2>&1
+    group_start "Installs all remaining dependencies that are not installed by '${AIRFLOW_EXTRAS}' "
+    pip install apache-beam[gcp]
+    group_end
 }
 
 function uninstall_airflow() {
-    echo
-    echo "Uninstalling airflow"
-    echo
     pip uninstall -y apache-airflow || true
-    echo
-    echo "Remove all AIRFLOW_HOME remnants"
-    echo
     find /root/airflow/ -type f -print0 | xargs -0 rm -f --
 }
 
+function uninstall_all_pip_packages() {
+    pip uninstall -y -r <(pip freeze)
+}
+
 function uninstall_providers() {
-    echo
-    echo "Uninstalling all provider packages"
-    echo
     local provider_packages_to_uninstall
     provider_packages_to_uninstall=$(pip freeze | grep apache-airflow-providers || true)
     if [[ -n ${provider_packages_to_uninstall} ]]; then
@@ -335,48 +326,81 @@ function uninstall_airflow_and_providers() {
 
 function install_released_airflow_version() {
     local version="${1}"
-    local extras="${2}"
     echo
-    echo "Installing released ${version} version of airflow with extras ${extras}"
+    echo "Installing released ${version} version of airflow without extras"
     echo
 
     rm -rf "${AIRFLOW_SOURCES}"/*.egg-info
-    pip install --upgrade "apache-airflow${extras}==${version}" >"${OUTPUT_PRINTED_ONLY_ON_ERROR}" 2>&1
+    pip install --upgrade "apache-airflow==${version}"
+}
+
+function install_local_airflow_with_eager_upgrade() {
+    local extras
+    extras="${1}"
+    # we add eager requirements to make sure to take into account limitations that will allow us to
+    # install all providers
+    # shellcheck disable=SC2086
+    pip install -e ".${extras}" ${EAGER_UPGRADE_ADDITIONAL_REQUIREMENTS} \
+        --upgrade --upgrade-strategy eager
+}
+
+
+function install_all_providers_from_pypi_with_eager_upgrade() {
+    ALL_PROVIDERS_PACKAGES=$(python -c 'import setup; print(setup.get_all_provider_packages())')
+    local packages_to_install=()
+    local provider_package
+    local res
+    for provider_package in ${ALL_PROVIDERS_PACKAGES}
+    do
+        echo -n "Checking if ${provider_package} is available in PyPI: "
+        res=$(curl --head -s -o /dev/null -w "%{http_code}" "https://pypi.org/project/${provider_package}/")
+        if [[ ${res} == "200" ]]; then
+            packages_to_install+=( "${provider_package}" )
+            echo "${COLOR_GREEN}OK${COLOR_RESET}"
+        else
+            echo "${COLOR_YELLOW}Skipped${COLOR_RESET}"
+        fi
+    done
+    echo "Installing provider packages: ${packages_to_install[*]}"
+    # we add eager requirements to make sure to take into account limitations that will allow us to
+    # install all providers. We install only those packages that are available in PyPI - we might
+    # Have some new providers in the works and they might not yet be simply available in PyPI
+    # Installing it with Airflow makes sure that the version of package that matches current
+    # Airflow requirements will be used.
+    # shellcheck disable=SC2086
+    pip install -e . "${packages_to_install[@]}" ${EAGER_UPGRADE_ADDITIONAL_REQUIREMENTS} \
+        --upgrade --upgrade-strategy eager
+
 }
 
 function install_all_provider_packages_from_wheels() {
     echo
     echo "Installing all provider packages from wheels"
     echo
-    pip install /dist/apache_airflow*providers_*.whl >"${OUTPUT_PRINTED_ONLY_ON_ERROR}" 2>&1
+    uninstall_providers
+    pip install /dist/apache_airflow*providers_*.whl
 }
 
-function install_all_provider_packages_from_tar_gz_files() {
+function install_all_provider_packages_from_sdist() {
     echo
     echo "Installing all provider packages from .tar.gz"
     echo
-    pip install /dist/apache-airflow-*providers-*.tar.gz >"${OUTPUT_PRINTED_ONLY_ON_ERROR}" 2>&1
+    uninstall_providers
+    pip install /dist/apache-airflow-*providers-*.tar.gz
 }
 
 function setup_provider_packages() {
-    if [[ ${BACKPORT_PACKAGES:=} == "true" ]]; then
-        export PACKAGE_TYPE="backport"
-        export PACKAGE_PREFIX_UPPERCASE="BACKPORT_"
-        export PACKAGE_PREFIX_LOWERCASE="backport_"
-        export PACKAGE_PREFIX_HYPHEN="backport-"
-    else
-        export PACKAGE_TYPE="regular"
-        export PACKAGE_PREFIX_UPPERCASE=""
-        export PACKAGE_PREFIX_LOWERCASE=""
-        export PACKAGE_PREFIX_HYPHEN=""
+    export PACKAGE_TYPE="regular"
+    export PACKAGE_PREFIX_UPPERCASE=""
+    export PACKAGE_PREFIX_LOWERCASE=""
+    export PACKAGE_PREFIX_HYPHEN=""
+    if [[ ${VERBOSE} == "true" ]]; then
+        OPTIONAL_VERBOSE_FLAG+=("--verbose")
     fi
     readonly PACKAGE_TYPE
     readonly PACKAGE_PREFIX_UPPERCASE
     readonly PACKAGE_PREFIX_LOWERCASE
     readonly PACKAGE_PREFIX_HYPHEN
-
-    readonly BACKPORT_PACKAGES
-    export BACKPORT_PACKAGES
 }
 
 function verify_suffix_versions_for_package_preparation() {
@@ -389,12 +413,12 @@ function verify_suffix_versions_for_package_preparation() {
 
     VERSION_SUFFIX_FOR_SVN=${VERSION_SUFFIX_FOR_SVN:=""}
 
-    if [[ ${VERSION_SUFFIX_FOR_PYPI} != "" ]]; then
+    if [[ -n "${VERSION_SUFFIX_FOR_PYPI}" ]]; then
         echo
         echo "Version suffix for PyPI = ${VERSION_SUFFIX_FOR_PYPI}"
         echo
     fi
-    if [[ ${VERSION_SUFFIX_FOR_SVN} != "" ]]; then
+    if [[ -n "${VERSION_SUFFIX_FOR_SVN}" ]]; then
         echo
         echo "Version suffix for SVN  = ${VERSION_SUFFIX_FOR_SVN}"
         echo
@@ -402,7 +426,7 @@ function verify_suffix_versions_for_package_preparation() {
 
     if [[ ${VERSION_SUFFIX_FOR_SVN} =~ ^rc ]]; then
         echo """
-${COLOR_YELLOW_WARNING} The version suffix for SVN is used only for file names.
+${COLOR_YELLOW}WARNING: The version suffix for SVN is used only for file names.
          The version inside the packages has no version suffix.
          This way we can just rename files when they graduate to final release.
 ${COLOR_RESET}
@@ -423,7 +447,7 @@ ${COLOR_RESET}
     if [[ ${VERSION_SUFFIX_FOR_PYPI} != '' && ${VERSION_SUFFIX_FOR_SVN} != '' ]]; then
         if [[ ${VERSION_SUFFIX_FOR_PYPI} != "${VERSION_SUFFIX_FOR_SVN}" ]]; then
             echo
-            echo "${COLOR_RED_ERROR} If you specify both PyPI and SVN version suffixes they must match  ${COLOR_RESET}"
+            echo "${COLOR_RED}ERROR: If you specify both PyPI and SVN version suffixes they must match  ${COLOR_RESET}"
             echo
             echo "However they are different: PyPI:'${VERSION_SUFFIX_FOR_PYPI}' vs. SVN:'${VERSION_SUFFIX_FOR_SVN}'"
             echo
@@ -431,7 +455,7 @@ ${COLOR_RESET}
         else
             if [[ ${VERSION_SUFFIX_FOR_PYPI} =~ ^rc ]]; then
                 echo
-                echo "${COLOR_RED_ERROR} If you prepare an RC candidate, you need to specify only PyPI suffix  ${COLOR_RESET}"
+                echo "${COLOR_RED}ERROR: If you prepare an RC candidate, you need to specify only PyPI suffix  ${COLOR_RESET}"
                 echo
                 echo "However you specified both: PyPI'${VERSION_SUFFIX_FOR_PYPI}' and SVN '${VERSION_SUFFIX_FOR_SVN}'"
                 echo
@@ -448,7 +472,7 @@ ${COLOR_RESET}
 
             if [[ ${VERSION_SUFFIX_FOR_PYPI} == '' ]]; then
                 echo
-                echo "${COLOR_RED_ERROR} You should never specify version for PyPI only.  ${COLOR_RESET}"
+                echo "${COLOR_RED}ERROR: You should never specify version for PyPI only.  ${COLOR_RESET}"
                 echo
                 echo "You specified PyPI suffix: '${VERSION_SUFFIX_FOR_PYPI}'"
                 echo
@@ -457,7 +481,7 @@ ${COLOR_RESET}
             TARGET_VERSION_SUFFIX=${VERSION_SUFFIX_FOR_PYPI}${VERSION_SUFFIX_FOR_SVN}
             if [[ ! ${TARGET_VERSION_SUFFIX} =~ rc.* ]]; then
                 echo
-                echo "${COLOR_RED_ERROR} If you prepare an alpha/beta release, you need to specify both PyPI/SVN suffixes and they have to match.  ${COLOR_RESET}"
+                echo "${COLOR_RED}ERROR: If you prepare an alpha/beta release, you need to specify both PyPI/SVN suffixes and they have to match.  ${COLOR_RESET}"
                 echo
                 echo "And they have to match. You specified only one suffix:  ${TARGET_VERSION_SUFFIX}."
                 echo
@@ -467,6 +491,12 @@ ${COLOR_RESET}
     fi
     readonly TARGET_VERSION_SUFFIX
     export TARGET_VERSION_SUFFIX
+    group_end
+}
+
+function install_supported_pip_version() {
+    group_start "Install supported PIP version ${AIRFLOW_PIP_VERSION}"
+    pip install --upgrade "pip==${AIRFLOW_PIP_VERSION}"
     group_end
 }
 
@@ -513,23 +543,83 @@ EOF
 function in_container_set_colors() {
     COLOR_BLUE=$'\e[34m'
     COLOR_GREEN=$'\e[32m'
-    COLOR_GREEN_OK=$'\e[32mOK.'
     COLOR_RED=$'\e[31m'
-    COLOR_RED_ERROR=$'\e[31mERROR:'
     COLOR_RESET=$'\e[0m'
     COLOR_YELLOW=$'\e[33m'
-    COLOR_YELLOW_WARNING=$'\e[33mWARNING:'
     export COLOR_BLUE
     export COLOR_GREEN
-    export COLOR_GREEN_OK
     export COLOR_RED
-    export COLOR_RED_ERROR
     export COLOR_RESET
     export COLOR_YELLOW
-    export COLOR_YELLOW_WARNING
 }
 
-# Starts group for Github Actions - makes logs much more readable
+
+function check_missing_providers() {
+    PACKAGE_ERROR="false"
+
+    pushd "${AIRFLOW_SOURCES}/airflow/providers" >/dev/null 2>&1 || exit 1
+
+    LIST_OF_DIRS_FILE=$(mktemp)
+    find . -type d | sed 's!./!!; s!/!.!g' | grep -E 'hooks|operators|sensors|secrets|utils' \
+        > "${LIST_OF_DIRS_FILE}"
+
+    popd >/dev/null 2>&1 || exit 1
+
+    # Check if all providers are included
+    for PACKAGE in "${PROVIDER_PACKAGES[@]}"
+    do
+        if ! grep -E "^${PACKAGE}" <"${LIST_OF_DIRS_FILE}" >/dev/null; then
+            echo "The package ${PACKAGE} is not available in providers dir"
+            PACKAGE_ERROR="true"
+        fi
+        sed -i "/^${PACKAGE}.*/d" "${LIST_OF_DIRS_FILE}"
+    done
+
+    if [[ ${PACKAGE_ERROR} == "true" ]]; then
+        echo
+        echo "ERROR! Some packages from ${PROVIDER_PACKAGES_DIR}/prepare_provider_packages.py are missing in providers dir"
+        exit 1
+    fi
+
+    if [[ $(wc -l < "${LIST_OF_DIRS_FILE}") != "0" ]]; then
+        echo "ERROR! Some folders from providers package are not defined"
+        echo "       Please add them to ${PROVIDER_PACKAGES_DIR}/prepare_provider_packages.py:"
+        echo
+        cat "${LIST_OF_DIRS_FILE}"
+        echo
+
+        rm "$LIST_OF_DIRS_FILE"
+        exit 1
+    fi
+    rm "$LIST_OF_DIRS_FILE"
+}
+
+function get_providers_to_act_on() {
+    group_start "Get all providers"
+    if [[ -z "$*" ]]; then
+        while IFS='' read -r line; do PROVIDER_PACKAGES+=("$line"); done < <(
+            python3 "${PROVIDER_PACKAGES_DIR}/prepare_provider_packages.py" \
+                list-providers-packages
+        )
+    else
+        if [[ "${1}" == "--help" ]]; then
+            echo
+            echo "Builds all provider packages."
+            echo
+            echo "You can provide list of packages to build out of:"
+            echo
+            python3 "${PROVIDER_PACKAGES_DIR}/prepare_provider_packages.py" \
+                list-providers-packages \
+                | tr '\n ' ' ' | fold -w 100 -s
+            echo
+            echo
+            exit
+        fi
+    fi
+    group_end
+}
+
+# Starts group for GitHub Actions - makes logs much more readable
 function group_start {
     if [[ ${GITHUB_ACTIONS=} == "true" ]]; then
         echo "::group::${1}"
@@ -540,7 +630,7 @@ function group_start {
     fi
 }
 
-# Ends group for Github Actions
+# Ends group for GitHub Actions
 function group_end {
     if [[ ${GITHUB_ACTIONS=} == "true" ]]; then
         echo -e "\033[0m"  # Disable any colors set in the group

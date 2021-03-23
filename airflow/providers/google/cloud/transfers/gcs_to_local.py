@@ -41,9 +41,9 @@ class GCSToLocalFilesystemOperator(BaseOperator):
     :param bucket: The Google Cloud Storage bucket where the object is.
         Must not contain 'gs://' prefix. (templated)
     :type bucket: str
-    :param object: The name of the object to download in the Google cloud
+    :param object_name: The name of the object to download in the Google cloud
         storage bucket. (templated)
-    :type object: str
+    :type object_name: str
     :param filename: The file path, including filename,  on the local file system (where the
         operator is being executed) that the file should be downloaded to. (templated)
         If no filename passed, the downloaded data will not be stored on the local file
@@ -75,7 +75,7 @@ class GCSToLocalFilesystemOperator(BaseOperator):
 
     template_fields = (
         'bucket',
-        'object',
+        'object_name',
         'filename',
         'store_to_xcom_key',
         'impersonation_chain',
@@ -129,7 +129,7 @@ class GCSToLocalFilesystemOperator(BaseOperator):
     def execute(self, context):
         self.log.info('Executing download: %s, %s, %s', self.bucket, self.object, self.filename)
         hook = GCSHook(
-            google_cloud_storage_conn_id=self.gcp_conn_id,
+            gcp_conn_id=self.gcp_conn_id,
             delegate_to=self.delegate_to,
             impersonation_chain=self.impersonation_chain,
         )

@@ -58,13 +58,6 @@ RUN_TESTS=${RUN_TESTS:="false"}
 CI=${CI:="false"}
 INSTALL_AIRFLOW_VERSION="${INSTALL_AIRFLOW_VERSION:=""}"
 
-if [[ ${GITHUB_ACTIONS:="false"} == "false" ]]; then
-    # Create links for useful CLI tools
-    # shellcheck source=scripts/in_container/run_cli_tool.sh
-    source <(bash scripts/in_container/run_cli_tool.sh)
-    ln -s '/opt/airflow/scripts/in_container/run_tmux.sh' /usr/bin/run_tmux
-fi
-
 if [[ ${AIRFLOW_VERSION} == *1.10* || ${INSTALL_AIRFLOW_VERSION} == *1.10* ]]; then
     export RUN_AIRFLOW_1_10="true"
 else
@@ -72,16 +65,18 @@ else
 fi
 
 if [[ -z ${INSTALL_AIRFLOW_VERSION=} ]]; then
+    export PYTHONPATH=${AIRFLOW_SOURCES}
     echo
     echo "Using already installed airflow version"
     echo
-    "${AIRFLOW_SOURCES}/airflow/www/ask_for_recompile_assets_if_needed.sh"
+    pushd "${AIRFLOW_SOURCES}/airflow/www/" >/dev/null
+    ./ask_for_recompile_assets_if_needed.sh
+    popd >/dev/null
     # Cleanup the logs, tmp when entering the environment
     sudo rm -rf "${AIRFLOW_SOURCES}"/logs/*
     sudo rm -rf "${AIRFLOW_SOURCES}"/tmp/*
     mkdir -p "${AIRFLOW_SOURCES}"/logs/
     mkdir -p "${AIRFLOW_SOURCES}"/tmp/
-    export PYTHONPATH=${AIRFLOW_SOURCES}
 elif [[ ${INSTALL_AIRFLOW_VERSION} == "none"  ]]; then
     echo
     echo "Skip installing airflow - only install wheel/tar.gz packages that are present locally"
@@ -103,9 +98,9 @@ elif [[ ${INSTALL_AIRFLOW_VERSION} == "sdist"  ]]; then
     uninstall_providers
 else
     echo
-    echo "Install airflow from PyPI including [${AIRFLOW_EXTRAS}] extras"
+    echo "Install airflow from PyPI without extras"
     echo
-    install_released_airflow_version "${INSTALL_AIRFLOW_VERSION}" "[${AIRFLOW_EXTRAS}]"
+    install_released_airflow_version "${INSTALL_AIRFLOW_VERSION}"
 fi
 if [[ ${INSTALL_PACKAGES_FROM_DIST=} == "true" ]]; then
     echo
@@ -115,7 +110,7 @@ if [[ ${INSTALL_PACKAGES_FROM_DIST=} == "true" ]]; then
     fi
     if [[ ${PACKAGE_FORMAT} == "both" ]]; then
         echo
-        echo "${COLOR_RED_ERROR}You can only specify 'wheel' or 'sdist' as PACKAGE_FORMAT not 'both'${COLOR_RESET}"
+        echo "${COLOR_RED}ERROR:You can only specify 'wheel' or 'sdist' as PACKAGE_FORMAT not 'both'${COLOR_RESET}"
         echo
         exit 1
     fi
@@ -152,6 +147,9 @@ unset AIRFLOW__CORE__UNIT_TEST_MODE
 
 mkdir -pv "${AIRFLOW_HOME}/logs/"
 cp -f "${IN_CONTAINER_DIR}/airflow_ci.cfg" "${AIRFLOW_HOME}/unittests.cfg"
+
+# Change the default worker_concurrency for tests
+export AIRFLOW__CELERY__WORKER_CONCURRENCY=8
 
 disable_rbac_if_requested
 
@@ -201,8 +199,8 @@ cd "${AIRFLOW_SOURCES}"
 if [[ ${START_AIRFLOW:="false"} == "true" ]]; then
     export AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS=${LOAD_DEFAULT_CONNECTIONS}
     export AIRFLOW__CORE__LOAD_EXAMPLES=${LOAD_EXAMPLES}
-    # shellcheck source=scripts/in_container/run_tmux.sh
-    exec /bin/bash "${IN_CONTAINER_DIR}/run_tmux.sh"
+    # shellcheck source=scripts/in_container/bin/run_tmux
+    exec run_tmux
 fi
 
 set +u
@@ -212,44 +210,39 @@ if [[ "${RUN_TESTS}" != "true" ]]; then
 fi
 set -u
 
-export RESULT_LOG_FILE="/files/test_result.xml"
+export RESULT_LOG_FILE="/files/test_result-${TEST_TYPE}.xml"
 
-if [[ "${GITHUB_ACTIONS}" == "true" ]]; then
-    EXTRA_PYTEST_ARGS=(
-        "--verbosity=0"
-        "--strict-markers"
-        "--durations=100"
-        "--cov=airflow/"
-        "--cov-config=.coveragerc"
-        "--cov-report=xml:/files/coverage.xml"
-        "--color=yes"
-        "--maxfail=50"
-        "--pythonwarnings=ignore::DeprecationWarning"
-        "--pythonwarnings=ignore::PendingDeprecationWarning"
-        "--junitxml=${RESULT_LOG_FILE}"
-        # timeouts in seconds for individual tests
-        "--setup-timeout=20"
-        "--execution-timeout=60"
-        "--teardown-timeout=20"
-        # Only display summary for non-expected case
-        # f - failed
-        # E - error
-        # X - xpassed (passed even if expected to fail)
-        # The following cases are not displayed:
-        # s - skipped
-        # x - xfailed (expected to fail and failed)
-        # p - passed
-        # P - passed with output
-        "-rfEX"
-    )
-    if [[ "${TEST_TYPE}" != "Helm" ]]; then
-        EXTRA_PYTEST_ARGS+=(
-        "--with-db-init"
-        )
-    fi
-else
-    EXTRA_PYTEST_ARGS=(
-        "-rfEX"
+EXTRA_PYTEST_ARGS=(
+    "--verbosity=0"
+    "--strict-markers"
+    "--durations=100"
+    "--cov=airflow/"
+    "--cov-config=.coveragerc"
+    "--cov-report=xml:/files/coverage.xml"
+    "--color=yes"
+    "--maxfail=50"
+    "--pythonwarnings=ignore::DeprecationWarning"
+    "--pythonwarnings=ignore::PendingDeprecationWarning"
+    "--junitxml=${RESULT_LOG_FILE}"
+    # timeouts in seconds for individual tests
+    "--setup-timeout=20"
+    "--execution-timeout=60"
+    "--teardown-timeout=20"
+    # Only display summary for non-expected case
+    # f - failed
+    # E - error
+    # X - xpassed (passed even if expected to fail)
+    # The following cases are not displayed:
+    # s - skipped
+    # x - xfailed (expected to fail and failed)
+    # p - passed
+    # P - passed with output
+    "-rfEX"
+)
+
+if [[ "${TEST_TYPE}" != "Helm" ]]; then
+    EXTRA_PYTEST_ARGS+=(
+    "--with-db-init"
     )
 fi
 
@@ -323,12 +316,12 @@ else
     elif [[ ${TEST_TYPE:=""} == "All" || ${TEST_TYPE} == "Quarantined" || \
             ${TEST_TYPE} == "Always" || \
             ${TEST_TYPE} == "Postgres" || ${TEST_TYPE} == "MySQL" || \
-            ${TEST_TYPE} == "Heisentests" || ${TEST_TYPE} == "Long" || \
+            ${TEST_TYPE} == "Long" || \
             ${TEST_TYPE} == "Integration" ]]; then
         SELECTED_TESTS=("${ALL_TESTS[@]}")
     else
         echo
-        echo  "${COLOR_RED_ERROR} Wrong test type ${TEST_TYPE}  ${COLOR_RESET}"
+        echo  "${COLOR_RED}ERROR: Wrong test type ${TEST_TYPE}  ${COLOR_RESET}"
         echo
         exit 1
     fi
@@ -347,11 +340,6 @@ elif [[ ${TEST_TYPE:=""} == "Long" ]]; then
     EXTRA_PYTEST_ARGS+=(
         "-m" "long_running"
         "--include-long-running"
-    )
-elif [[ ${TEST_TYPE:=""} == "Heisentests" ]]; then
-    EXTRA_PYTEST_ARGS+=(
-        "-m" "heisentests"
-        "--include-heisentests"
     )
 elif [[ ${TEST_TYPE:=""} == "Postgres" ]]; then
     EXTRA_PYTEST_ARGS+=(

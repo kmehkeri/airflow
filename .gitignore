@@ -17,7 +17,7 @@ airflow/www/static/dist
 airflow/www_rbac/static/coverage/
 airflow/www_rbac/static/dist/
 
-logs/
+/logs/
 airflow-webserver.pid
 
 # Byte-compiled / optimized / DLL files
@@ -215,3 +215,7 @@ Chart.lock
 pip-wheel-metadata
 
 .pypirc
+
+# Dev files
+/dev/packages.txt
+/dev/Dockerfile.pmc
